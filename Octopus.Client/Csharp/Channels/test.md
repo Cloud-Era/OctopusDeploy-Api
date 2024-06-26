@@ -1,21 +1,24 @@
-Yes, we can generate a report of all repositories in your GitHub organization in CSV format. We will use the GitHub API to fetch the repository information and then write that data to a CSV file using Python. Here's a step-by-step guide to achieve this:
+To improve the performance of the script, we can use asynchronous requests to fetch data in parallel. This will significantly speed up the process, especially when dealing with a large number of repositories.
 
-### Step 1: Set Up GitHub Personal Access Token
+Here's an updated version of the script using the `aiohttp` and `asyncio` libraries for asynchronous requests:
 
-First, you need a GitHub personal access token with the necessary permissions to access your organization's repositories. Follow these steps:
+### Step 1: Install `aiohttp` Library
 
-1. Go to [GitHub Settings](https://github.com/settings/tokens).
-2. Click on "Generate new token".
-3. Select the necessary scopes, such as `repo` and `read:org`.
-4. Generate the token and copy it. Keep it secure.
+First, ensure that you have the `aiohttp` library installed. You can install it using pip:
 
-### Step 2: Python Script to Fetch Repository Data
+```sh
+pip install aiohttp
+```
 
-Here’s a Python script that uses the GitHub API to fetch the repository information and save it as a CSV file.
+### Step 2: Update the Script
+
+Here's the updated script using `aiohttp` and `asyncio` for asynchronous requests:
 
 ```python
-import requests
+import aiohttp
+import asyncio
 import csv
+import time
 
 # Replace these with your own values
 GITHUB_TOKEN = 'your_personal_access_token'
@@ -25,58 +28,95 @@ headers = {
     'Authorization': f'token {GITHUB_TOKEN}'
 }
 
-# GitHub API endpoint to list all repositories in an organization
-url = f'https://api.github.com/orgs/{ORG_NAME}/repos'
+# GitHub API endpoints
+org_repos_url = f'https://api.github.com/orgs/{ORG_NAME}/repos'
+teams_url = f'https://api.github.com/orgs/{ORG_NAME}/teams'
 
-repositories = []
-page = 1
+# Asynchronous function to fetch paginated data from GitHub API
+async def fetch_paginated_data(session, url, params={}):
+    data = []
+    page = 1
+    while True:
+        async with session.get(url, headers=headers, params={**params, 'per_page': 100, 'page': page}) as response:
+            page_data = await response.json()
+            if not page_data:
+                break
+            data.extend(page_data)
+            page += 1
+    return data
 
-while True:
-    response = requests.get(url, headers=headers, params={'per_page': 100, 'page': page})
-    data = response.json()
-    if not data:
-        break
-    repositories.extend(data)
-    page += 1
+# Asynchronous function to fetch teams and contributors for a repository
+async def fetch_repo_details(session, repo):
+    repo_name = repo['name']
+    repo_teams_url = f'https://api.github.com/repos/{ORG_NAME}/{repo_name}/teams'
+    repo_contributors_url = f'https://api.github.com/repos/{ORG_NAME}/{repo_name}/contributors'
 
-# Define the CSV file path
-csv_file_path = 'github_repositories.csv'
+    teams = await fetch_paginated_data(session, repo_teams_url)
+    contributors = await fetch_paginated_data(session, repo_contributors_url)
 
-# Define the CSV headers
-csv_headers = ['Repository Name', 'Description', 'Private', 'URL', 'Created At', 'Updated At', 'Pushed At', 'Size', 'Stargazers Count', 'Watchers Count', 'Forks Count']
+    team_names = [team['name'] for team in teams]
+    contributor_logins = [contributor['login'] for contributor in contributors]
 
-# Write data to CSV
-with open(csv_file_path, mode='w', newline='', encoding='utf-8') as csv_file:
-    writer = csv.DictWriter(csv_file, fieldnames=csv_headers)
-    writer.writeheader()
-    for repo in repositories:
-        writer.writerow({
-            'Repository Name': repo['name'],
-            'Description': repo['description'],
-            'Private': repo['private'],
-            'URL': repo['html_url'],
-            'Created At': repo['created_at'],
-            'Updated At': repo['updated_at'],
-            'Pushed At': repo['pushed_at'],
-            'Size': repo['size'],
-            'Stargazers Count': repo['stargazers_count'],
-            'Watchers Count': repo['watchers_count'],
-            'Forks Count': repo['forks_count']
-        })
+    return {
+        'Repository Name': repo['name'],
+        'Description': repo['description'],
+        'Private': repo['private'],
+        'URL': repo['html_url'],
+        'Created At': repo['created_at'],
+        'Updated At': repo['updated_at'],
+        'Pushed At': repo['pushed_at'],
+        'Size': repo['size'],
+        'Stargazers Count': repo['stargazers_count'],
+        'Watchers Count': repo['watchers_count'],
+        'Forks Count': repo['forks_count'],
+        'Teams': ', '.join(team_names),
+        'Contributors': ', '.join(contributor_logins)
+    }
 
-print(f"Report generated: {csv_file_path}")
+# Main asynchronous function to fetch all repository details and write to CSV
+async def main():
+    async with aiohttp.ClientSession() as session:
+        print("Fetching all repositories...")
+        repositories = await fetch_paginated_data(session, org_repos_url)
+        print(f"Total repositories found: {len(repositories)}")
+
+        # Fetch details for all repositories asynchronously
+        tasks = [fetch_repo_details(session, repo) for repo in repositories]
+        repo_details = await asyncio.gather(*tasks)
+
+        # Define the CSV file path
+        csv_file_path = 'github_repositories_with_teams_and_contributors.csv'
+
+        # Define the CSV headers
+        csv_headers = ['Repository Name', 'Description', 'Private', 'URL', 'Created At', 'Updated At', 'Pushed At', 'Size', 'Stargazers Count', 'Watchers Count', 'Forks Count', 'Teams', 'Contributors']
+
+        # Write data to CSV
+        with open(csv_file_path, mode='w', newline='', encoding='utf-8') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=csv_headers)
+            writer.writeheader()
+            for details in repo_details:
+                writer.writerow(details)
+
+        print(f"Report generated: {csv_file_path}")
+
+# Run the main function
+asyncio.run(main())
 ```
 
-### Step 3: Run the Script
+### Explanation
 
-1. Save the script to a file, e.g., `generate_github_report.py`.
+1. **Asynchronous Requests**: The `aiohttp` library is used to perform asynchronous HTTP requests.
+2. **Fetching Data in Parallel**: The `fetch_repo_details` function fetches teams and contributors for a repository concurrently.
+3. **Main Function**: The `main` function orchestrates the fetching of repository data and writing it to a CSV file asynchronously.
+
+### Running the Script
+
+1. Save the updated script to a file, e.g., `generate_github_report_async.py`.
 2. Replace `'your_personal_access_token'` and `'your_organization_name'` with your actual GitHub token and organization name.
 3. Run the script:
 
 ```sh
-python generate_github_report.py
+python generate_github_report_async.py
 ```
 
-This will generate a CSV file named `github_repositories.csv` in the same directory as the script, containing the details of all repositories in your GitHub organization.
-
-Let me know if you need any adjustments or additional information in the report!
+This will fetch data for all repositories concurrently, significantly reducing the time required to generate the report.
