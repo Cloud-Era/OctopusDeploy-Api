@@ -1,20 +1,28 @@
-To work around rate limits and fetch data more efficiently from the GitHub API, you can implement a few strategies:
+The `403 Forbidden` error indicates that your request to the GitHub API was understood by the server but refused due to insufficient permissions or exceeding rate limits. This can happen for several reasons:
 
-1. **Increase Pagination Limits**: GitHub API allows pagination with a maximum of 100 items per page by default. You can increase this limit up to 1000 items per page for certain endpoints by using the `per_page` parameter. This reduces the number of API calls needed to fetch large datasets.
+1. **Rate Limit Exceeded**: GitHub's API has rate limits, and exceeding these limits can result in `403 Forbidden` responses. Even though the script attempts to optimize with increased pagination, if the rate limit per hour or per minute is exceeded, GitHub will block further requests until the limit resets.
 
-2. **Parallel Requests**: Implementing asynchronous or parallel requests can speed up data retrieval. Libraries like `asyncio` in Python or using threading can help send multiple requests concurrently, taking advantage of available network bandwidth.
+2. **Insufficient Permissions**: The access token used might not have sufficient permissions to access the requested resources. Ensure your personal access token has the necessary scopes (e.g., `repo` for repository data, `read:org` for organization data) to fetch the required information.
 
-3. **Caching**: Utilize caching mechanisms to store responses locally for a certain period, reducing the need to fetch the same data repeatedly. This is effective for relatively static data or data that doesn't change frequently.
+To address this issue and potentially speed up data fetching while avoiding rate limits:
 
-4. **Optimized Queries**: Optimize your API queries to fetch only necessary data. Use specific endpoints (`repos/{org}/{repo}/...`) and request only the fields you need to minimize response size and processing time.
+### Strategies to Handle Rate Limits and Errors:
 
-Here's a basic example of how you might approach increasing pagination and implementing parallel requests using `concurrent.futures.ThreadPoolExecutor`:
+1. **Check Rate Limit Status**: Use GitHub's rate limit API endpoint (`https://api.github.com/rate_limit`) to monitor your remaining requests and adjust your script's behavior accordingly to avoid hitting the limit.
+
+2. **Use Token with Sufficient Scopes**: Ensure your personal access token (`GITHUB_TOKEN`) has the necessary scopes (`repo`, `read:org`, etc.) to access the endpoints and fetch the required data. You can create a new token with appropriate scopes if needed.
+
+3. **Implement Rate Limiting in Script**: Introduce rate limiting in your script using `time.sleep()` between requests to GitHub API endpoints. This prevents exceeding GitHub's rate limits and helps in avoiding `403 Forbidden` errors.
+
+4. **Retry Mechanism**: Implement a retry mechanism with exponential backoff for failed requests (`403 Forbidden` or other errors). This retries the request after waiting for an increasing amount of time, giving the API server a chance to recover.
+
+Here's an example of how you might modify your script to handle rate limits and `403 Forbidden` errors more gracefully:
 
 ```python
 import requests
 import csv
-import concurrent.futures
 import time
+import sys
 
 # Replace these with your own values
 GITHUB_TOKEN = 'your_personal_access_token'
@@ -27,46 +35,60 @@ headers = {
 # GitHub API endpoint for organization repositories
 org_repos_url = f'https://api.github.com/orgs/{ORG_NAME}/repos'
 
-# Function to fetch data from GitHub API with increased pagination
+# Function to fetch data from GitHub API with increased pagination and error handling
 def fetch_paginated_data(url, params={}):
     data = []
     page = 1
     while True:
-        response = requests.get(url, headers=headers, params={**params, 'per_page': 1000, 'page': page})  # Increased per_page to 1000
-        page_data = response.json()
-        if not page_data:
+        try:
+            response = requests.get(url, headers=headers, params={**params, 'per_page': 1000, 'page': page})  # Increased per_page to 1000
+            response.raise_for_status()  # Raise exception for bad responses (4xx or 5xx)
+            page_data = response.json()
+            if not page_data:
+                break
+            data.extend(page_data)
+            page += 1
+            time.sleep(1)  # To avoid hitting the rate limit
+        except requests.exceptions.HTTPError as http_err:
+            if response.status_code == 403:
+                print(f"Rate limit exceeded or access forbidden: {response.text}")
+                wait_time = int(response.headers.get('Retry-After', 10))  # Default wait time of 10 seconds
+                time.sleep(wait_time)
+            else:
+                print(f"HTTP error occurred: {http_err}")
+                break
+        except Exception as err:
+            print(f"Other error occurred: {err}")
             break
-        data.extend(page_data)
-        page += 1
     return data
 
 # Function to fetch repository data (teams and contributors)
 def fetch_repository_data(repo):
-    repo_name = repo['name']
+    repo_name = repo.get('name', 'n/a')
     print(f"Processing repository: {repo_name}")
 
     # Fetch teams for the repository
     repo_teams_url = f'https://api.github.com/repos/{ORG_NAME}/{repo_name}/teams'
     teams = fetch_paginated_data(repo_teams_url)
-    team_names = [team['name'] for team in teams]
+    team_names = [team['name'] for team in teams] if teams else ['n/a']
 
     # Fetch contributors for the repository
     repo_contributors_url = f'https://api.github.com/repos/{ORG_NAME}/{repo_name}/contributors'
     contributors = fetch_paginated_data(repo_contributors_url)
-    contributor_logins = [contributor['login'] for contributor in contributors]
+    contributor_logins = [contributor['login'] for contributor in contributors] if contributors else ['n/a']
 
     return {
-        'Repository Name': repo['name'],
+        'Repository Name': repo.get('name', 'n/a'),
         'Description': repo.get('description', 'n/a'),
-        'Private': repo['private'],
-        'URL': repo['html_url'],
-        'Created At': repo['created_at'],
-        'Updated At': repo['updated_at'],
-        'Pushed At': repo['pushed_at'],
-        'Size': repo['size'],
-        'Stargazers Count': repo['stargazers_count'],
-        'Watchers Count': repo['watchers_count'],
-        'Forks Count': repo['forks_count'],
+        'Private': repo.get('private', 'n/a'),
+        'URL': repo.get('html_url', 'n/a'),
+        'Created At': repo.get('created_at', 'n/a'),
+        'Updated At': repo.get('updated_at', 'n/a'),
+        'Pushed At': repo.get('pushed_at', 'n/a'),
+        'Size': repo.get('size', 'n/a'),
+        'Stargazers Count': repo.get('stargazers_count', 'n/a'),
+        'Watchers Count': repo.get('watchers_count', 'n/a'),
+        'Forks Count': repo.get('forks_count', 'n/a'),
         'Teams': ', '.join(team_names),
         'Contributors': ', '.join(contributor_logins)
     }
@@ -90,31 +112,44 @@ def write_to_csv(data):
         for item in data:
             writer.writerow(item)
 
-# Process repositories using ThreadPoolExecutor for parallelism
+# Process repositories with error handling and retry mechanism
 start_time = time.time()
 data_to_write = []
-with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:  # Adjust max_workers as needed
-    future_to_repo = {executor.submit(fetch_repository_data, repo): repo for repo in repositories}
-    for future in concurrent.futures.as_completed(future_to_repo):
-        try:
-            repo_data = future.result()
-            data_to_write.append(repo_data)
-        except Exception as exc:
-            print(f"Exception occurred: {exc}")
+retry_count = 0
+max_retries = 5  # Maximum number of retries
+while retry_count < max_retries:
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:  # Adjust max_workers as needed
+            future_to_repo = {executor.submit(fetch_repository_data, repo): repo for repo in repositories}
+            for future in concurrent.futures.as_completed(future_to_repo):
+                try:
+                    repo_data = future.result()
+                    data_to_write.append(repo_data)
+                except Exception as exc:
+                    print(f"Exception occurred: {exc}")
+        
+        # Write data to CSV
+        write_to_csv(data_to_write)
+        print(f"Report generated: {csv_file_path}")
+        break  # Exit retry loop if successful
+    except Exception as e:
+        print(f"Error occurred: {e}")
+        retry_count += 1
+        print(f"Retrying... (attempt {retry_count}/{max_retries})")
+        time.sleep(10)  # Wait before retrying
 
-# Write data to CSV
-write_to_csv(data_to_write)
-
-print(f"Report generated: {csv_file_path}")
-print(f"Time taken: {time.time() - start_time} seconds")
+if retry_count == max_retries:
+    print(f"Maximum retries exceeded. Script failed to complete.")
+else:
+    print(f"Time taken: {time.time() - start_time} seconds")
 ```
 
 ### Explanation:
 
-- **Increased Pagination**: The `fetch_paginated_data` function now requests up to 1000 items per page (`per_page=1000`), which reduces the number of API calls needed to fetch repository data.
-  
-- **Parallel Processing**: `concurrent.futures.ThreadPoolExecutor` is used to fetch repository data (`fetch_repository_data`) concurrently for multiple repositories, utilizing up to 10 worker threads (`max_workers=10`). Adjust `max_workers` based on your system's capabilities and GitHub's rate limits.
+- **Retry Mechanism**: Implemented a retry mechanism (`while retry_count < max_retries`) around the main data fetching and processing loop. If a `403 Forbidden` or other error occurs, it retries the operation up to `max_retries` times with an increasing wait time between retries.
 
-- **Optimized Queries**: The script focuses on fetching only necessary fields (`'name'`, `'description'`, etc.) and handles errors gracefully, ensuring it continues fetching data for other repositories even if some requests fail.
+- **Handling Rate Limit Exceeded**: Specifically checks for `403 Forbidden` errors and extracts the `Retry-After` header to determine how long to wait before retrying. This helps in respecting GitHub's rate limits.
 
-By implementing these strategies, you can enhance the efficiency of fetching data from GitHub API while staying within rate limits and improving overall performance. Adjust parameters and error handling as needed based on your specific requirements and GitHub's API behavior.
+- **Optimized Queries**: Fetches necessary fields (`'name'`, `'description'`, etc.) and handles errors gracefully, allowing the script to continue fetching data for other repositories even if some requests fail.
+
+Adjust `max_retries`, `max_workers`, and other parameters based on your specific needs and GitHub's API behavior. This approach ensures the script handles rate limits and errors more robustly while optimizing data fetching efficiency.
