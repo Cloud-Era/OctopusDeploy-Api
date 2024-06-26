@@ -1,24 +1,11 @@
-To improve the performance of the script, we can use asynchronous requests to fetch data in parallel. This will significantly speed up the process, especially when dealing with a large number of repositories.
+The `asyncio.run()` function might not work well in certain environments, especially if you're running the script in a Jupyter notebook or an interactive shell. Instead, we can use an alternative approach to run the asynchronous event loop.
 
-Here's an updated version of the script using the `aiohttp` and `asyncio` libraries for asynchronous requests:
-
-### Step 1: Install `aiohttp` Library
-
-First, ensure that you have the `aiohttp` library installed. You can install it using pip:
-
-```sh
-pip install aiohttp
-```
-
-### Step 2: Update the Script
-
-Here's the updated script using `aiohttp` and `asyncio` for asynchronous requests:
+Here’s the revised script with an adjusted approach to run the event loop:
 
 ```python
 import aiohttp
 import asyncio
 import csv
-import time
 
 # Replace these with your own values
 GITHUB_TOKEN = 'your_personal_access_token'
@@ -30,7 +17,6 @@ headers = {
 
 # GitHub API endpoints
 org_repos_url = f'https://api.github.com/orgs/{ORG_NAME}/repos'
-teams_url = f'https://api.github.com/orgs/{ORG_NAME}/teams'
 
 # Asynchronous function to fetch paginated data from GitHub API
 async def fetch_paginated_data(session, url, params={}):
@@ -99,15 +85,21 @@ async def main():
 
         print(f"Report generated: {csv_file_path}")
 
-# Run the main function
-asyncio.run(main())
+if __name__ == "__main__":
+    # Handle event loop policy issues on Windows
+    import sys
+    if sys.platform.startswith('win') and sys.version_info >= (3, 8):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    # Run the main function
+    asyncio.run(main())
 ```
 
 ### Explanation
 
-1. **Asynchronous Requests**: The `aiohttp` library is used to perform asynchronous HTTP requests.
-2. **Fetching Data in Parallel**: The `fetch_repo_details` function fetches teams and contributors for a repository concurrently.
-3. **Main Function**: The `main` function orchestrates the fetching of repository data and writing it to a CSV file asynchronously.
+1. **Windows Event Loop Policy**: For Windows users with Python 3.8 or later, setting the `asyncio.WindowsSelectorEventLoopPolicy` can resolve issues related to the event loop.
+2. **Standard Script Execution**: By wrapping the script execution in a `__main__` block, we ensure it runs properly as a standalone script.
+3. **`asyncio.run(main())`**: This should now work properly with the adjustments made.
 
 ### Running the Script
 
@@ -119,4 +111,4 @@ asyncio.run(main())
 python generate_github_report_async.py
 ```
 
-This will fetch data for all repositories concurrently, significantly reducing the time required to generate the report.
+This setup should run more smoothly, especially in different environments and operating systems.
